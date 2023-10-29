@@ -1,22 +1,13 @@
-{% extends "public.html" %} {% block page %}
+{% extends "public_lnc.html" %} {% block page %}
 <div class="row justify-center q-mt-md">
   <div class="col-lg-4 col-md-6 col-sm-8 col-xs-10">
     <q-card>
       <q-card-section class="text-center">
-        <div class="text-h4">${charge.name || 'LNbits SatsPay'}</div>
-        <div class="text-subtitle1">${charge.description}</div>
+        <div class="text-h6">${charge.description}</div>
       </q-card-section>
       <satspay-time-elapsed :charge="charge"></satspay-time-elapsed>
       <q-card-section>
         <q-list>
-          <q-item-label header
-            >Charge ID:
-            <span
-              class="text-uppercase text-secondary cursor-pointer"
-              @click="copyText(charge.id)"
-              >${charge.id}</span
-            >
-          </q-item-label>
           <q-item dense>
             <q-item-section>
               <q-item-label>Total to pay:</q-item-label>
@@ -107,7 +98,7 @@
             v-if="charge.onchainaddress"
             name="uqr"
             icon="qr_code"
-            label="UQR (BIP21)"
+            label="Unified QR (BIP21)"
           ></q-tab>
           <q-tab
             v-if="charge.payment_request"
@@ -144,8 +135,8 @@
                 <satspay-show-qr
                   :charge-amount="charge.amount"
                   :type="'ln'"
-                  :value="'lightning:' + charge.payment_request.toUpperCase()"
-                  :href="'lightning:'+charge.payment_request"
+                  :value="charge.payment_request.toUpperCase()"
+                  :href="'lightning:' + charge.payment_request"
                 ></satspay-show-qr>
               </div>
             </div>
