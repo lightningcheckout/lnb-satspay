@@ -23,16 +23,17 @@ async def create_charge(
     if data.onchainwallet:
         if not onchainaddress or not config:
             raise Exception(f"Wallet '{data.onchainwallet}' can no longer be accessed.")
-        data.extra = json.dumps(
-            {"mempool_endpoint": config.mempool_endpoint, "network": config.network}
-        )
+        # This overwrites the send in data, disabled as quick fix.
+        #data.extra = json.dumps(
+        #    {"mempool_endpoint": config.mempool_endpoint, "network": config.network}
+        #)
 
     if data.lnbitswallet:
         payment_hash, payment_request = await create_invoice(
             wallet_id=data.lnbitswallet,
             amount=data.amount,
             memo=data.description,
-            extra={"tag": "charge", "charge": charge_id},
+            extra={"tag": "charge", "charge": charge_id, "charge_data": data.extra},
             expiry=int(data.time * 60),  # convert minutes to seconds
         )
     else:
