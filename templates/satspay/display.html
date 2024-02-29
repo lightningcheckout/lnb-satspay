@@ -246,6 +246,7 @@
           )
           this.charge = mapCharge(data, this.charge)
           if (this.charge.paid) {
+            let redirectToCompleteLink = true
             this.timerInterval = setInterval(() => {
               if (this.timer >= 100) {
                 clearInterval(this.timerInterval)
