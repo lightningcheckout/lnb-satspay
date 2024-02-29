@@ -249,8 +249,12 @@
             this.timerInterval = setInterval(() => {
               if (this.timer >= 100) {
                 clearInterval(this.timerInterval)
-                if (this.charge.completelink)
-                  window.location.href = this.charge.completelink
+
+                // Check if redirection hasn't already occurred
+		        if (redirectToCompleteLink && this.charge.completelink) {
+		          redirectToCompleteLink = false; // Set flag to false to prevent further redirections
+		          window.location.href = this.charge.completelink
+
               }
               this.timer += 0.25
             }, 12.5)
