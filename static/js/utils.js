@@ -14,16 +14,23 @@ const retryWithDelay = async function (fn, retryCount = 0) {
 }
 
 const mapCharge = (obj, oldObj = {}) => {
-  const charge = {...oldObj, ...obj}
-
-  charge.progress = obj.time_left < 0 ? 1 : 1 - obj.time_left / obj.time
-  charge.time = minutesToTime(obj.time)
-  charge.timeLeft = minutesToTime(obj.time_left)
-
+  let charge = {...oldObj, ...obj}
   charge.displayUrl = ['/satspay/', obj.id].join('')
   charge.expanded = oldObj.expanded || false
-  charge.pendingBalance = oldObj.pendingBalance || 0
-  charge.extra = charge.extra ? JSON.parse(charge.extra) : charge.extra
+  charge.extra =
+    charge.extra && charge.extra instanceof String
+      ? JSON.parse(charge.extra)
+      : charge.extra
+  const now = new Date().getTime() / 1000
+  const then = new Date(charge.timestamp).getTime() / 1000
+  const chargeTimeSeconds = charge.time * 60
+  const secondsSinceCreated = chargeTimeSeconds - now + then
+  charge.timeSecondsLeft = chargeTimeSeconds - now + then
+  charge.timeLeft =
+    charge.timeSecondsLeft <= 0
+      ? '00:00:00'
+      : secondsToTime(charge.timeSecondsLeft)
+  charge.progress = progress(charge.time * 60, secondsSinceCreated)
   return charge
 }
 
@@ -32,5 +39,15 @@ const mapCSS = (obj, oldObj = {}) => {
   return theme
 }
 
-const minutesToTime = min =>
-  min > 0 ? new Date(min * 1000).toISOString().substring(14, 19) : ''
+const padString = num => num.toString().padStart(2, '0')
+
+const secondsToTime = seconds => {
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${padString(hours)}:${padString(minutes)}:${padString(secs)}`
+}
+
+const progress = (startSeconds, currentSeconds) => {
+  return 1 - (startSeconds - currentSeconds) / startSeconds
+}

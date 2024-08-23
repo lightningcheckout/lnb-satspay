@@ -1,23 +1,28 @@
 import json
-from typing import List, Optional
-
-from loguru import logger
+from typing import Optional
 
 from lnbits.core.services import create_invoice
-from lnbits.core.views.api import api_payment
-from lnbits.helpers import urlsafe_short_hash
+from lnbits.db import Database
+from lnbits.helpers import insert_query, update_query, urlsafe_short_hash
 
-from . import db
-from .helpers import fetch_onchain_balance
-from .models import Charges, CreateCharge, SatsPayThemes, WalletAccountConfig
+from .models import (
+    Charge,
+    CreateCharge,
+    CreateSatsPayTheme,
+    SatspaySettings,
+    SatsPayTheme,
+    WalletAccountConfig,
+)
+
+db = Database("ext_satspay")
 
 
 async def create_charge(
     user: str,
     data: CreateCharge,
-    config: Optional[WalletAccountConfig],
+    config: Optional[WalletAccountConfig] = None,
     onchainaddress: Optional[str] = None,
-) -> Charges:
+) -> Charge:
     data = CreateCharge(**data.dict())
     charge_id = urlsafe_short_hash()
     if data.onchainwallet:
@@ -28,6 +33,7 @@ async def create_charge(
         #    {"mempool_endpoint": config.mempool_endpoint, "network": config.network}
         #)
 
+    assert data.amount, "Amount is required"
     if data.lnbitswallet:
         payment_hash, payment_request = await create_invoice(
             wallet_id=data.lnbitswallet,
@@ -89,119 +95,122 @@ async def create_charge(
     return charge
 
 
-async def update_charge(charge_id: str, **kwargs) -> Optional[Charges]:
-    q = ", ".join([f"{field[0]} = ?" for field in kwargs.items()])
+async def update_charge(charge: Charge) -> Charge:
     await db.execute(
-        f"UPDATE satspay.charges SET {q} WHERE id = ?", (*kwargs.values(), charge_id)
+        """
+        UPDATE satspay.charges
+        SET extra = ?, balance = ?, pending = ?, paid = ? WHERE id = ?
+        """,
+        (
+            charge.extra,
+            charge.balance,
+            charge.pending,
+            charge.paid,
+            charge.id,
+        ),
     )
-    return await get_charge(charge_id)
+    return charge
 
 
-async def get_charge(charge_id: str) -> Optional[Charges]:
-    await db.execute(
-        f"UPDATE satspay.charges SET last_accessed_at = {db.timestamp_now} WHERE id = ?",
-        (charge_id,),
-    )
-
+async def get_charge(charge_id: str) -> Optional[Charge]:
     row = await db.fetchone("SELECT * FROM satspay.charges WHERE id = ?", (charge_id,))
-    return Charges.from_row(row) if row else None
+    return Charge(**row) if row else None
 
 
-async def get_charges(user: str) -> List[Charges]:
-    await db.execute(
-        f"""UPDATE satspay.charges SET last_accessed_at = {db.timestamp_now} WHERE "user"  = ?""",
-        (user,),
+async def get_charge_by_onchain_address(onchain_address: str) -> Optional[Charge]:
+    row = await db.fetchone(
+        "SELECT * FROM satspay.charges WHERE onchainaddress = ?", (onchain_address,)
     )
+    return Charge(**row) if row else None
+
+
+async def get_charges(user: str) -> list[Charge]:
     rows = await db.fetchall(
         """SELECT * FROM satspay.charges WHERE "user" = ? ORDER BY "timestamp" DESC """,
         (user,),
     )
-    return [Charges.from_row(row) for row in rows]
+    return [Charge(**row) for row in rows]
 
 
 async def delete_charge(charge_id: str) -> None:
     await db.execute("DELETE FROM satspay.charges WHERE id = ?", (charge_id,))
 
 
-async def check_address_balance(charge_id: str) -> Optional[Charges]:
-    charge = await get_charge(charge_id)
-    assert charge
-    if not charge.paid:
-        if charge.onchainaddress:
-            try:
-                balance = await fetch_onchain_balance(charge)
-                confirmed = int(balance["confirmed"])
-                unconfirmed = int(balance["unconfirmed"])
-                if confirmed != charge.balance or unconfirmed != charge.pending:
-                    if charge.zeroconf:
-                        confirmed += unconfirmed
-
-                    await update_charge(
-                        charge_id=charge_id,
-                        balance=confirmed,
-                        pending=unconfirmed,
-                    )
-            except Exception as e:
-                logger.warning(e)
-        if charge.lnbitswallet:
-            try:
-                invoice_status = await api_payment(charge.payment_hash)
-
-                if invoice_status["paid"]:
-                    return await update_charge(
-                        charge_id=charge_id, balance=charge.amount
-                    )
-            except Exception as e:
-                logger.warning(e)
-    return await get_charge(charge_id)
-
-
-################## SETTINGS ###################
-
-
-async def save_theme(data: SatsPayThemes, css_id: Optional[str]):
-    # insert or update
-    if css_id:
-        await db.execute(
-            """
-            UPDATE satspay.themes SET custom_css = ?, title = ? WHERE css_id = ?
-            """,
-            (data.custom_css, data.title, css_id),
+async def create_theme(data: CreateSatsPayTheme, user_id: str) -> SatsPayTheme:
+    css_id = urlsafe_short_hash()
+    await db.execute(
+        """
+        INSERT INTO satspay.themes (
+            css_id,
+            title,
+            "user",
+            custom_css
         )
-    else:
-        css_id = urlsafe_short_hash()
-        await db.execute(
-            """
-            INSERT INTO satspay.themes (
-                css_id,
-                title,
-                "user",
-                custom_css
-                )
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                css_id,
-                data.title,
-                data.user,
-                data.custom_css,
-            ),
-        )
-    return await get_theme(css_id)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            css_id,
+            data.title,
+            user_id,
+            data.custom_css,
+        ),
+    )
+    theme = await get_theme(css_id)
+    assert theme, "Newly created theme does not exist"
+    return theme
 
 
-async def get_theme(css_id: str) -> Optional[SatsPayThemes]:
+async def update_theme(data: SatsPayTheme) -> SatsPayTheme:
+    await db.execute(
+        """
+        UPDATE satspay.themes SET custom_css = ?, title = ? WHERE css_id = ?
+        """,
+        (data.custom_css, data.title, data.css_id),
+    )
+    theme = await get_theme(data.css_id)
+    assert theme, "newly updated theme does not exist"
+    return theme
+
+
+async def get_theme(css_id: str) -> Optional[SatsPayTheme]:
     row = await db.fetchone("SELECT * FROM satspay.themes WHERE css_id = ?", (css_id,))
-    return SatsPayThemes.from_row(row) if row else None
+    return SatsPayTheme(**row) if row else None
 
 
-async def get_themes(user_id: str) -> List[SatsPayThemes]:
+async def get_themes(user_id: str) -> list[SatsPayTheme]:
     rows = await db.fetchall(
-        """SELECT * FROM satspay.themes WHERE "user" = ? ORDER BY "title" DESC """,
+        """
+        SELECT * FROM satspay.themes WHERE "user" = ? ORDER BY title DESC
+        """,
         (user_id,),
     )
-    return [SatsPayThemes.from_row(row) for row in rows]
+    return [SatsPayTheme(**row) for row in rows]
 
 
 async def delete_theme(theme_id: str) -> None:
     await db.execute("DELETE FROM satspay.themes WHERE css_id = ?", (theme_id,))
+
+
+async def get_or_create_satspay_settings() -> SatspaySettings:
+    row = await db.fetchone("SELECT * FROM satspay.settings LIMIT 1")
+    if row:
+        return SatspaySettings(**row)
+    else:
+        settings = SatspaySettings()
+        await db.execute(
+            insert_query("satspay.settings", settings), (*settings.dict().values(),)
+        )
+        return settings
+
+
+async def update_satspay_settings(settings: SatspaySettings) -> SatspaySettings:
+    await db.execute(
+        # 3rd arguments `WHERE clause` is empty for settings
+        update_query("satspay.settings", settings, ""),
+        (*settings.dict().values(),),
+    )
+    return settings
+
+
+async def delete_satspay_settings() -> None:
+    await db.execute("DELETE FROM satspay.settings")

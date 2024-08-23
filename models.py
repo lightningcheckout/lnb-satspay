@@ -1,14 +1,20 @@
+from __future__ import annotations
+
 import json
-from datetime import datetime, timedelta
-from sqlite3 import Row
+from datetime import datetime
 from typing import Optional
 
 from fastapi.param_functions import Query
 from pydantic import BaseModel
 
+DEFAULT_MEMPOOL_ENDPOINT = "https://mempool.space"
 DEFAULT_MEMPOOL_CONFIG = (
     '{"mempool_endpoint": "https://mempool.space", "network": "Mainnet"}'
 )
+
+
+class SatspaySettings(BaseModel):
+    mempool_url: str = DEFAULT_MEMPOOL_ENDPOINT
 
 
 class CreateCharge(BaseModel):
@@ -19,22 +25,24 @@ class CreateCharge(BaseModel):
     webhook: str = Query(None)
     completelink: str = Query(None)
     completelinktext: str = Query("Back to Merchant")
-    custom_css: Optional[str]
     time: int = Query(..., ge=1)
-    amount: int = Query(..., ge=1)
+    amount: Optional[int] = Query(None, ge=1)
     zeroconf: bool = Query(False)
     extra: str = DEFAULT_MEMPOOL_CONFIG
+    custom_css: Optional[str] = Query(None)
+    currency: str = Query(None)
+    currency_amount: Optional[float] = Query(None)
 
 
 class ChargeConfig(BaseModel):
-    mempool_endpoint: Optional[str]
+    mempool_endpoint: str
     network: Optional[str]
-    webhook_success: Optional[bool] = False
     webhook_message: Optional[str]
+    webhook_success: bool = False
     misc: dict = {}
 
 
-class Charges(BaseModel):
+class Charge(BaseModel):
     id: str
     name: Optional[str]
     description: Optional[str]
@@ -53,48 +61,53 @@ class Charges(BaseModel):
     zeroconf: bool
     balance: int
     pending: Optional[int] = 0
-    timestamp: int
-    last_accessed_at: Optional[int] = 0
-
-    @classmethod
-    def from_row(cls, row: Row) -> "Charges":
-        return cls(**dict(row))
-
-    @property
-    def time_left(self):
-        life_in_seconds = self.last_accessed_at - self.timestamp
-        life_left_in_secods = self.time * 60 - life_in_seconds
-        return life_left_in_secods / 60
-
-    @property
-    def time_elapsed(self):
-        return self.time_left < 0
-
-    @property
-    def paid(self):
-        if self.balance >= self.amount:
-            return True
-        else:
-            return False
+    timestamp: datetime
+    last_accessed_at: Optional[datetime] = None  # unused, TODO: remove
+    currency: Optional[str] = None
+    currency_amount: Optional[float] = None
+    paid: bool = False
 
     @property
     def config(self) -> ChargeConfig:
         charge_config = json.loads(self.extra)
         return ChargeConfig(**charge_config)
 
-    def must_call_webhook(self):
-        return self.webhook and self.paid and self.config.webhook_success is False
+    @property
+    def public(self):
+        public_keys = [
+            "id",
+            "name",
+            "description",
+            "onchainaddress",
+            "payment_request",
+            "payment_hash",
+            "time",
+            "amount",
+            "zeroconf",
+            "balance",
+            "pending",
+            "timestamp",
+            "custom_css",
+            "paid",
+            "completelinktext",
+        ]
+        c = {k: v for k, v in self.dict().items() if k in public_keys}
+        c["timestamp"] = self.timestamp.isoformat()
+        if self.paid:
+            c["completelink"] = self.completelink
+        return c
 
 
-class SatsPayThemes(BaseModel):
-    css_id: str = Query(None)
-    title: str = Query(None)
-    custom_css: str = Query(None)
-    user: Optional[str]
+class CreateSatsPayTheme(BaseModel):
+    title: str = Query(...)
+    custom_css: str = Query(...)
 
-    @classmethod
-    def from_row(cls, row: Row) -> "SatsPayThemes":
-        return cls(**dict(row))
+
+class SatsPayTheme(BaseModel):
+    css_id: str
+    title: str
+    custom_css: str
+    user: str
 
 
 class WalletAccountConfig(BaseModel):
@@ -103,3 +116,8 @@ class WalletAccountConfig(BaseModel):
     change_gap_limit: int
     sats_denominated: bool
     network: str
+
+
+class OnchainBalance(BaseModel):
+    confirmed: int
+    unconfirmed: int

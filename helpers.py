@@ -1,80 +1,65 @@
-from typing import Tuple
+import json
 
 import httpx
+from lnbits.core.crud import get_standalone_payment
+from lnbits.settings import settings
 from loguru import logger
 
-from lnbits.app import settings
-
-from .models import Charges, WalletAccountConfig
+from .models import Charge, OnchainBalance, WalletAccountConfig
 
 
-def public_charge(charge: Charges):
-    c = {
-        "id": charge.id,
-        "name": charge.name,
-        "description": charge.description,
-        "onchainaddress": charge.onchainaddress,
-        "payment_request": charge.payment_request,
-        "payment_hash": charge.payment_hash,
-        "time": charge.time,
-        "amount": charge.amount,
-        "zeroconf": charge.zeroconf,
-        "balance": charge.balance,
-        "pending": charge.pending,
-        "paid": charge.paid,
-        "timestamp": charge.timestamp,
-        "time_elapsed": charge.time_elapsed,
-        "time_left": charge.time_left,
-        "custom_css": charge.custom_css,
-    }
-
-    if charge.paid:
-        c["completelink"] = charge.completelink
-        c["completelinktext"] = charge.completelinktext
-
-    return c
-
-
-async def call_webhook(charge: Charges):
-    async with httpx.AsyncClient() as client:
-        try:
-            assert charge.webhook
-            r = await client.post(
-                charge.webhook,
-                json=public_charge(charge),
-                timeout=40,
+async def call_webhook(charge: Charge):
+    try:
+        assert charge.webhook
+        async with httpx.AsyncClient() as client:
+            # wordpress expect a GET request with json_encoded binary content
+            r = await client.request(
+                method="GET",
+                url=charge.webhook,
+                content=charge.json(),
+                timeout=10,
             )
+            if r.is_success:
+                logger.success(f"Webhook sent for charge {charge.id}")
+            else:
+                logger.warning(f"Failed to call webhook for charge {charge.id}")
+                logger.warning(charge.webhook)
+                logger.warning(r.text)
             return {
                 "webhook_success": r.is_success,
                 "webhook_message": r.reason_phrase,
                 "webhook_response": r.text,
             }
-        except Exception as e:
-            logger.warning(f"Failed to call webhook for charge {charge.id}")
-            logger.warning(e)
-            return {"webhook_success": False, "webhook_message": str(e)}
+    except Exception as e:
+        logger.warning(f"Failed to call webhook for charge {charge.id}")
+        logger.warning(e)
+        return {"webhook_success": False, "webhook_message": str(e)}
 
 
-async def fetch_onchain_balance(charge: Charges):
-    endpoint = (
+def get_endpoint(charge: Charge) -> str:
+    assert charge.config.mempool_endpoint, "No mempool endpoint configured"
+    return (
         f"{charge.config.mempool_endpoint}/testnet"
         if charge.config.network == "Testnet"
-        else charge.config.mempool_endpoint
+        else charge.config.mempool_endpoint or ""
     )
-    assert endpoint
-    assert charge.onchainaddress
+
+
+async def fetch_onchain_balance(
+    onchain_address: str, mempool_endpoint: str
+) -> OnchainBalance:
     async with httpx.AsyncClient() as client:
-        r = await client.get(endpoint + "/api/address/" + charge.onchainaddress)
-        resp = r.json()
-        return {
-            "confirmed": resp["chain_stats"]["funded_txo_sum"],
-            "unconfirmed": resp["mempool_stats"]["funded_txo_sum"],
-        }
+        res = await client.get(f"{mempool_endpoint}/api/address/{onchain_address}")
+        res.raise_for_status()
+        data = res.json()
+        confirmed = data["chain_stats"]["funded_txo_sum"]
+        unconfirmed = data["mempool_stats"]["funded_txo_sum"]
+        return OnchainBalance(confirmed=confirmed, unconfirmed=unconfirmed)
 
 
 async def fetch_onchain_config(
     wallet_id: str, api_key: str
-) -> Tuple[WalletAccountConfig, str]:
+) -> tuple[WalletAccountConfig, str]:
     async with httpx.AsyncClient() as client:
         headers = {"X-API-KEY": api_key}
         r = await client.get(
@@ -95,3 +80,41 @@ async def fetch_onchain_config(
             raise ValueError("Cannot fetch new address!")
 
         return WalletAccountConfig.parse_obj(config), address_data["address"]
+
+
+async def check_charge_balance(charge: Charge) -> Charge:
+    if charge.paid:
+        return charge
+
+    if charge.lnbitswallet and charge.payment_hash:
+        payment = await get_standalone_payment(charge.payment_hash)
+        assert payment, "Payment not found."
+        status = await payment.check_status()
+        if status.success:
+            charge.balance = charge.amount
+
+    if charge.onchainaddress:
+        try:
+            balance = await fetch_onchain_balance(
+                charge.onchainaddress, charge.config.mempool_endpoint
+            )
+            if (
+                balance.confirmed != charge.balance
+                or balance.unconfirmed != charge.pending
+            ):
+                charge.balance = (
+                    balance.confirmed + balance.unconfirmed
+                    if charge.zeroconf
+                    else balance.confirmed
+                )
+                charge.pending = balance.unconfirmed
+        except Exception as exc:
+            logger.warning(f"Charge check onchain address failed with: {exc!s}")
+
+    charge.paid = charge.balance >= charge.amount
+
+    if charge.paid and charge.webhook:
+        resp = await call_webhook(charge)
+        charge.extra = json.dumps({**charge.config.dict(), **resp})
+
+    return charge

@@ -1,205 +1,134 @@
-import json
-from typing import Optional
 from http import HTTPStatus
 
-from fastapi import Depends, HTTPException, Query
-from loguru import logger
-
+from fastapi import APIRouter, Depends, HTTPException
+from lnbits.core.models import WalletTypeInfo
 from lnbits.decorators import (
-    WalletTypeInfo,
     check_admin,
-    get_key_type,
     require_admin_key,
     require_invoice_key,
 )
+from lnbits.utils.exchange_rates import get_fiat_rate_satoshis
+from loguru import logger
 
-from . import satspay_ext, scheduled_tasks
 from .crud import (
-    check_address_balance,
     create_charge,
     delete_charge,
-    delete_theme,
+    delete_satspay_settings,
     get_charge,
     get_charges,
-    get_theme,
-    get_themes,
-    save_theme,
+    get_or_create_satspay_settings,
     update_charge,
+    update_satspay_settings,
 )
-from .helpers import call_webhook, fetch_onchain_config, public_charge
-from .models import CreateCharge, SatsPayThemes
+from .helpers import check_charge_balance, fetch_onchain_config
+from .models import Charge, CreateCharge, SatspaySettings
+from .tasks import start_onchain_listener, stop_onchain_listener
+
+satspay_api_router = APIRouter()
 
 
-@satspay_ext.post("/api/v1/charge")
+@satspay_api_router.post("/api/v1/charge")
 async def api_charge_create(
     data: CreateCharge, wallet: WalletTypeInfo = Depends(require_invoice_key)
-):
-    try:
-        if data.onchainwallet:
+) -> Charge:
+    if not data.amount and not data.currency_amount:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail="either amount or currency_amount are required.",
+        )
+    if data.currency and data.currency_amount:
+        rate = await get_fiat_rate_satoshis(data.currency)
+        data.amount = round(rate * data.currency_amount)
+    if data.onchainwallet:
+        try:
             config, new_address = await fetch_onchain_config(
                 data.onchainwallet, wallet.wallet.inkey
             )
-        else:
-            config, new_address = None, None
+            start_onchain_listener(new_address)
+            return await create_charge(
+                user=wallet.wallet.user,
+                onchainaddress=new_address,
+                data=data,
+                config=config,
+            )
+        except Exception as exc:
+            logger.error(f"Error fetching onchain config: {exc}")
+    return await create_charge(user=wallet.wallet.user, data=data)
 
-        charge = await create_charge(
-            user=wallet.wallet.user,
-            data=data,
-            config=config,
-            onchainaddress=new_address,
-        )
-        assert charge
-        return {
-            **charge.dict(),
-            **{"time_elapsed": charge.time_elapsed},
-            **{"time_left": charge.time_left},
-            **{"paid": charge.paid},
-        }
-    except Exception as ex:
-        logger.debug(f"Satspay error: {str}")
+
+@satspay_api_router.get("/api/v1/charges")
+async def api_charges_retrieve(
+    wallet: WalletTypeInfo = Depends(require_admin_key),
+) -> list[Charge]:
+    return await get_charges(wallet.wallet.user)
+
+
+"""
+This endpoint is used by the woocommerce plugin to check if the status of a charge
+is paid. you can refresh the success page of the webshop to trigger this endpoint.
+useful if the webhook is not working or fails for some reason.
+https://github.com/lnbits/woocommerce-payment-gateway/blob/main/lnbits.php#L312
+"""
+
+
+@satspay_api_router.get(
+    "/api/v1/charge/{charge_id}", dependencies=[Depends(require_invoice_key)]
+)
+async def api_charge_retrieve(charge_id: str) -> dict:
+    charge = await get_charge(charge_id)
+    if not charge:
         raise HTTPException(
-            status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=str(ex)
+            status_code=HTTPStatus.NOT_FOUND, detail="Charge does not exist."
         )
+    return charge.public
 
 
-@satspay_ext.put(
+@satspay_api_router.get(
+    "/api/v1/charge/balance/{charge_id}", dependencies=[Depends(require_admin_key)]
+)
+async def api_charge_check_balance(charge_id: str) -> Charge:
+    charge = await get_charge(charge_id)
+    if not charge:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail="Charge does not exist."
+        )
+    if charge.paid:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST, detail="Charge is already paid."
+        )
+    balance_before = charge.balance
+    pending_before = charge.pending
+    charge = await check_charge_balance(charge)
+    if charge.balance != balance_before or charge.pending != pending_before:
+        charge = await update_charge(charge)
+    return charge
+
+
+@satspay_api_router.delete(
     "/api/v1/charge/{charge_id}", dependencies=[Depends(require_admin_key)]
 )
-async def api_charge_update(
-    data: CreateCharge,
-    charge_id: str,
-):
-    charge = await update_charge(charge_id=charge_id, data=data)
-    assert charge
-    return charge.dict()
-
-
-@satspay_ext.get("/api/v1/charges")
-async def api_charges_retrieve(wallet: WalletTypeInfo = Depends(get_key_type)):
-    try:
-        return [
-            {
-                **charge.dict(),
-                **{"time_elapsed": charge.time_elapsed},
-                **{"time_left": charge.time_left},
-                **{"paid": charge.paid},
-                **{"webhook_message": charge.config.webhook_message},
-            }
-            for charge in await get_charges(wallet.wallet.user)
-        ]
-    except:
-        return ""
-
-
-@satspay_ext.get("/api/v1/charge/{charge_id}", dependencies=[Depends(get_key_type)])
-async def api_charge_retrieve(charge_id: str):
-    charge = await get_charge(charge_id)
-
-    if not charge:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Charge does not exist."
-        )
-
-    return {
-        **charge.dict(),
-        **{"time_elapsed": charge.time_elapsed},
-        **{"time_left": charge.time_left},
-        **{"paid": charge.paid},
-    }
-
-
-@satspay_ext.delete("/api/v1/charge/{charge_id}", dependencies=[Depends(get_key_type)])
 async def api_charge_delete(charge_id: str):
     charge = await get_charge(charge_id)
-
     if not charge:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail="Charge does not exist."
         )
+    if charge.onchainaddress:
+        stop_onchain_listener(charge.onchainaddress)
 
     await delete_charge(charge_id)
-    return "", HTTPStatus.NO_CONTENT
 
 
-#############################BALANCE##########################
+@satspay_api_router.get("/api/v1/settings", dependencies=[Depends(check_admin)])
+async def api_get_or_create_settings() -> SatspaySettings:
+    return await get_or_create_satspay_settings()
 
 
-@satspay_ext.get("/api/v1/charges/balance/{charge_ids}")
-async def api_charges_balance(charge_ids):
-    charge_id_list = charge_ids.split(",")
-    charges = []
-    for charge_id in charge_id_list:
-        charge = await api_charge_balance(charge_id)
-        charges.append(charge)
-    return charges
+@satspay_api_router.put("/api/v1/settings", dependencies=[Depends(check_admin)])
+async def api_update_settings(data: SatspaySettings) -> SatspaySettings:
+    return await update_satspay_settings(data)
 
 
-@satspay_ext.get("/api/v1/charge/balance/{charge_id}")
-async def api_charge_balance(charge_id):
-    charge = await check_address_balance(charge_id)
-
-    if not charge:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Charge does not exist."
-        )
-
-    if charge.must_call_webhook():
-        resp = await call_webhook(charge)
-        extra = {**charge.config.dict(), **resp}
-        await update_charge(charge_id=charge.id, extra=json.dumps(extra))
-
-    return {**public_charge(charge)}
-
-
-#############################THEMES##########################
-
-
-@satspay_ext.post("/api/v1/themes", dependencies=[Depends(check_admin)])
-@satspay_ext.post("/api/v1/themes/{css_id}", dependencies=[Depends(check_admin)])
-async def api_themes_save(
-    data: SatsPayThemes,
-    wallet: WalletTypeInfo = Depends(require_admin_key),
-    css_id: Optional[str] = None,
-):
-    if css_id:
-        theme = await save_theme(css_id=css_id, data=data)
-    else:
-        data.user = wallet.wallet.user
-        theme = await save_theme(data=data, css_id="no_id")
-    return theme
-
-
-@satspay_ext.get("/api/v1/themes")
-async def api_themes_retrieve(wallet: WalletTypeInfo = Depends(get_key_type)):
-    try:
-        return await get_themes(wallet.wallet.user)
-    except HTTPException:
-        logger.error("Error loading satspay themes")
-        logger.error(HTTPException)
-        return ""
-
-
-@satspay_ext.delete("/api/v1/themes/{theme_id}", dependencies=[Depends(get_key_type)])
-async def api_theme_delete(theme_id):
-    theme = await get_theme(theme_id)
-
-    if not theme:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND, detail="Theme does not exist."
-        )
-
-    await delete_theme(theme_id)
-    return "", HTTPStatus.NO_CONTENT
-
-
-@satspay_ext.delete(
-    "/api/v1", status_code=HTTPStatus.OK, dependencies=[Depends(check_admin)]
-)
-async def api_stop():
-    for t in scheduled_tasks:
-        try:
-            t.cancel()
-        except Exception as ex:
-            logger.warning(ex)
-
-    return {"success": True}
+@satspay_api_router.delete("/api/v1/settings", dependencies=[Depends(check_admin)])
+async def api_delete_settings() -> None:
+    await delete_satspay_settings()
