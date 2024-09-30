@@ -7,14 +7,11 @@ from typing import Optional
 from fastapi.param_functions import Query
 from pydantic import BaseModel
 
-DEFAULT_MEMPOOL_ENDPOINT = "https://mempool.space"
-DEFAULT_MEMPOOL_CONFIG = (
-    '{"mempool_endpoint": "https://mempool.space", "network": "Mainnet"}'
-)
-
 
 class SatspaySettings(BaseModel):
-    mempool_url: str = DEFAULT_MEMPOOL_ENDPOINT
+    webhook_method: str = "GET"
+    mempool_url: str = "https://mempool.space"
+    network: str = "Mainnet"
 
 
 class CreateCharge(BaseModel):
@@ -28,18 +25,11 @@ class CreateCharge(BaseModel):
     time: int = Query(..., ge=1)
     amount: Optional[int] = Query(None, ge=1)
     zeroconf: bool = Query(False)
-    extra: str = DEFAULT_MEMPOOL_CONFIG
+    fasttrack: bool = Query(False)
     custom_css: Optional[str] = Query(None)
     currency: str = Query(None)
     currency_amount: Optional[float] = Query(None)
-
-
-class ChargeConfig(BaseModel):
-    mempool_endpoint: str
-    network: Optional[str]
-    webhook_message: Optional[str]
-    webhook_success: bool = False
-    misc: dict = {}
+    extra: Optional[str] = Query(None)
 
 
 class Charge(BaseModel):
@@ -55,10 +45,10 @@ class Charge(BaseModel):
     completelink: Optional[str]
     completelinktext: Optional[str] = "Back to Merchant"
     custom_css: Optional[str]
-    extra: str = DEFAULT_MEMPOOL_CONFIG
     time: int
     amount: int
     zeroconf: bool
+    fasttrack: bool
     balance: int
     pending: Optional[int] = 0
     timestamp: datetime
@@ -66,11 +56,18 @@ class Charge(BaseModel):
     currency: Optional[str] = None
     currency_amount: Optional[float] = None
     paid: bool = False
+    extra: Optional[str] = None
+
+    def add_extra(self, extra: dict):
+        old_extra = json.loads(self.extra) if self.extra else {}
+        self.extra = json.dumps({**old_extra, **extra})
 
     @property
-    def config(self) -> ChargeConfig:
-        charge_config = json.loads(self.extra)
-        return ChargeConfig(**charge_config)
+    def paid_fasttrack(self):
+        """
+        ignore the pending status if fasttrack is enabled tell the frontend its paid
+        """
+        return (self.pending or 0) >= self.amount and self.fasttrack or self.paid
 
     @property
     def public(self):
@@ -84,6 +81,7 @@ class Charge(BaseModel):
             "time",
             "amount",
             "zeroconf",
+            "fasttrack",
             "balance",
             "pending",
             "timestamp",
@@ -93,7 +91,8 @@ class Charge(BaseModel):
         ]
         c = {k: v for k, v in self.dict().items() if k in public_keys}
         c["timestamp"] = self.timestamp.isoformat()
-        if self.paid:
+        c["paid"] = self.paid_fasttrack
+        if self.paid_fasttrack:
             c["completelink"] = self.completelink
         return c
 
@@ -110,14 +109,7 @@ class SatsPayTheme(BaseModel):
     user: str
 
 
-class WalletAccountConfig(BaseModel):
-    mempool_endpoint: str
-    receive_gap_limit: int
-    change_gap_limit: int
-    sats_denominated: bool
-    network: str
-
-
 class OnchainBalance(BaseModel):
     confirmed: int
     unconfirmed: int
+    txids: list[str]

@@ -175,3 +175,37 @@ async def m011_persist_paid(db):
         )
     except OperationalError:
         pass
+
+
+async def m012_add_setting_network(db):
+    """
+    Add 'network' column for storing the network
+    """
+    try:
+        await db.execute("ALTER TABLE satspay.settings ADD COLUMN network TEXT")
+        await db.execute("UPDATE satspay.settings SET network = 'Mainnet'")
+    except OperationalError:
+        pass
+
+
+async def m013_add_setting_webhook(db):
+    """
+    Add 'webhook_method' column for storing the webhook method
+    """
+    try:
+        await db.execute("ALTER TABLE satspay.settings ADD COLUMN webhook_method TEXT")
+        await db.execute("UPDATE satspay.settings SET webhook_method = 'GET'")
+    except OperationalError:
+        pass
+
+
+async def m014_fasttrack_to_charge(db):
+    """
+    Add 'fasttrack' column to charge for allowing fasttrack checkout without 0conf
+    """
+    try:
+        await db.execute(
+            "ALTER TABLE satspay.charges ADD COLUMN fasttrack BOOLEAN DEFAULT FALSE"
+        )
+    except OperationalError:
+        pass

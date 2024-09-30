@@ -83,13 +83,12 @@
           <template v-slot:header="props">
             <q-tr :props="props">
               <q-th auto-width></q-th>
-              <q-th auto-width>Status </q-th>
+              <q-th auto-width>Status</q-th>
               <q-th auto-width>Title</q-th>
-              <q-th auto-width>Time Left (hh:mm)</q-th>
-              <q-th auto-width>Time To Pay (hh:mm)</q-th>
-              <q-th auto-width>Amount To Pay</q-th>
+              <q-th auto-width>Time Left (hh:mm:ss)</q-th>
+              <q-th auto-width>Amount</q-th>
               <q-th auto-width>Balance</q-th>
-              <q-th auto-width>Pending Balance</q-th>
+              <q-th auto-width>Pending</q-th>
               <q-th auto-width>Onchain Address</q-th>
               <q-th auto-width></q-th>
             </q-tr>
@@ -155,12 +154,12 @@
                   >
                 </q-badge>
               </q-td>
-              <q-td key="description" :props="props" :class="">
+              <q-td key="name" :props="props">
                 <a
                   :href="props.row.displayUrl"
                   target="_blank"
                   style="color: unset; text-decoration: none"
-                  >{{props.row.description}}</a
+                  >{{props.row.name}}</a
                 >
               </q-td>
               <q-td key="timeLeft" :props="props" :class="">
@@ -175,9 +174,6 @@
                   >
                   </q-linear-progress>
                 </div>
-              </q-td>
-              <q-td key="time to pay" :props="props" :class="">
-                <div>{{props.row.time}}</div>
               </q-td>
               <q-td key="amount" :props="props" :class="">
                 <div>{{props.row.amount}}</div>
@@ -200,31 +196,22 @@
             </q-tr>
             <q-tr v-show="props.row.expanded" :props="props">
               <q-td colspan="100%">
-                <div
-                  v-if="props.row.onchainwallet"
-                  class="row items-center q-mt-md q-mb-lg"
-                >
-                  <div class="col-2 q-pr-lg">Onchain Wallet:</div>
-                  <div class="col-4 q-pr-lg">
+                <div style="padding: 12px">
+                  <div>ID: {{props.row.id}}</div>
+                  <div>Description: {{props.row.description}}</div>
+                  <div v-if="props.row.onchainwallet">
+                    Onchain Wallet:
                     {{getOnchainWalletName(props.row.onchainwallet)}}
                   </div>
-                </div>
-                <div
-                  v-if="props.row.lnbitswallet"
-                  class="row items-center q-mt-md q-mb-lg"
-                >
-                  <div class="col-2 q-pr-lg">LNbits Wallet:</div>
-                  <div class="col-4 q-pr-lg">
+                  <div v-if="props.row.lnbitswallet">
+                    LNbits Wallet:
                     {{getLNbitsWalletName(props.row.lnbitswallet)}}
                   </div>
-                </div>
 
-                <div
-                  v-if="props.row.completelink || props.row.completelinktext"
-                  class="row items-center q-mt-md q-mb-lg"
-                >
-                  <div class="col-2 q-pr-lg">Completed Link:</div>
-                  <div class="col-4 q-pr-lg">
+                  <div
+                    v-if="props.row.completelink || props.row.completelinktext"
+                  >
+                    Completed Link:
                     <a
                       class="text-secondary"
                       :href="props.row.completelink"
@@ -234,13 +221,8 @@
                       props.row.completelink}}</a
                     >
                   </div>
-                </div>
-                <div
-                  v-if="props.row.webhook"
-                  class="row items-center q-mt-md q-mb-lg"
-                >
-                  <div class="col-2 q-pr-lg">Webhook:</div>
-                  <div class="col-4 q-pr-lg">
+                  <div v-if="props.row.webhook">
+                    Webhook:
                     <a
                       class="text-secondary"
                       :href="props.row.webhook"
@@ -249,31 +231,26 @@
                       >{{props.row.webhook}}</a
                     >
                   </div>
-                  <div class="col-4 q-pr-lg">
+                  <div v-if="props.row.webhook">
+                    Webhook Response:
                     <q-badge
-                      v-if="props.row.webhook_message"
+                      v-if="props.row.extra && props.row.extra.webhook_message"
                       @click="showWebhookResponseDialog(props.row.extra.webhook_response)"
                       color="blue"
                       class="cursor-pointer"
                     >
-                      {{props.row.webhook_message }}
+                      {{props.row.extra.webhook_message }}
                     </q-badge>
+                    <span v-else>no response yet</span>
                   </div>
-                </div>
-                <div class="row items-center q-mt-md q-mb-lg">
-                  <div class="col-2 q-pr-lg">ID:</div>
-                  <div class="col-4 q-pr-lg">{{props.row.id}}</div>
-                </div>
-                <div class="row items-center q-mt-md q-mb-lg">
-                  <div class="col-2 q-pr-lg"></div>
-                  <div class="col-6 q-pr-lg">
+                  <div class="row">
                     <q-btn
                       unelevated
                       outline
                       type="a"
                       :href="props.row.displayUrl"
                       target="_blank"
-                      class="float-left q-mr-lg"
+                      class="float-left q-mr-md q-mt-md"
                       >Details</q-btn
                     >
                     <q-btn
@@ -281,20 +258,28 @@
                       outline
                       icon="refresh"
                       @click="checkChargeBalance(props.row.id)"
-                      class="float-left q-mr-lg"
+                      class="float-left q-mr-md q-mt-md"
                       v-if="!props.row.paid"
                       >Check charge balance</q-btn
+                    >
+                    <q-btn
+                      unelevated
+                      outline
+                      icon="refresh"
+                      @click="sendWebhook(props.row.id)"
+                      class="float-left q-mr-md q-mt-md"
+                      v-if="props.row.paid && props.row.webhook"
+                      >Resend Webhook</q-btn
                     >
                     <q-btn
                       unelevated
                       color="pink"
                       icon="cancel"
                       @click="deleteChargeLink(props.row.id)"
+                      class="float-left q-mr-md q-mt-md"
                       >Delete</q-btn
                     >
                   </div>
-                  <div class="col-4"></div>
-                  <div class="col-2 q-pr-lg"></div>
                 </div>
               </q-td>
             </q-tr>
@@ -322,18 +307,15 @@
           {% raw %}
           <template v-slot:header="props">
             <q-tr :props="props">
+              <q-th auto-width></q-th>
               <q-th v-for="col in props.cols" :key="col.name" :props="props">
                 {{ col.label }}
               </q-th>
-              <q-th auto-width></q-th>
             </q-tr>
           </template>
 
           <template v-slot:body="props">
             <q-tr :props="props">
-              <q-td v-for="col in props.cols" :key="col.name" :props="props">
-                {{ col.value }}
-              </q-td>
               <q-td auto-width>
                 <q-btn
                   flat
@@ -343,8 +325,6 @@
                   icon="edit"
                   color="light-blue"
                 ></q-btn>
-              </q-td>
-              <q-td auto-width>
                 <q-btn
                   flat
                   dense
@@ -353,6 +333,9 @@
                   icon="cancel"
                   color="pink"
                 ></q-btn>
+              </q-td>
+              <q-td v-for="col in props.cols" :key="col.name" :props="props">
+                {{ col.value }}
               </q-td>
             </q-tr>
           </template>
@@ -375,6 +358,7 @@
       </q-card-section>
     </q-card>
   </div>
+
   <q-dialog v-model="formDialogCharge.show" position="top">
     <q-card class="q-pa-lg q-pt-xl lnbits__dialog-card">
       <q-form @submit="sendFormDataCharge" class="q-gutter-md">
@@ -472,7 +456,7 @@
             :options="walletLinks"
             label="Onchain Wallet"
           ></q-select>
-          <q-item tag="label" v-ripple>
+          <q-item tag="label" v-ripple v-if="!formDialogCharge.data.fasttrack">
             <q-item-section avatar top>
               <q-checkbox v-model="formDialogCharge.data.zeroconf" />
             </q-item-section>
@@ -482,6 +466,22 @@
                 Allow payments with 0 confirmations. This is less secure but
                 faster. Payments will be marked paid once they are seen on the
                 mempool.
+              </q-item-label>
+            </q-item-section>
+          </q-item>
+          <q-item tag="label" v-ripple v-if="!formDialogCharge.data.zeroconf">
+            <q-item-section avatar top>
+              <q-checkbox v-model="formDialogCharge.data.fasttrack" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label
+                >Fastrack redirect in checkout without 0-conf.</q-item-label
+              >
+              <q-item-label caption>
+                If enabled, the user will be redirected from the checkout page
+                once the onchain payment is detected (0-conf). Unlike 0-conf it
+                will wait for the onchain to be confirmed to send a webhook with
+                charge is paid.
               </q-item-label>
             </q-item-section>
           </q-item>
@@ -618,6 +618,7 @@
 {% endblock %} {% block scripts %} {{ window_vars(user) }}
 <script>
   const admin = '{{ admin }}'
+  const network = '{{ network }}'
 </script>
 <script src="{{ static_url_for('satspay/static', path='js/utils.js') }}"></script>
 <script src="{{ static_url_for('satspay/static', path='js/index.js') }}"></script>

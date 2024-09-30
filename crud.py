@@ -1,4 +1,3 @@
-import json
 from typing import Optional
 
 from lnbits.core.services import create_invoice
@@ -11,7 +10,6 @@ from .models import (
     CreateSatsPayTheme,
     SatspaySettings,
     SatsPayTheme,
-    WalletAccountConfig,
 )
 
 db = Database("ext_satspay")
@@ -20,18 +18,12 @@ db = Database("ext_satspay")
 async def create_charge(
     user: str,
     data: CreateCharge,
-    config: Optional[WalletAccountConfig] = None,
     onchainaddress: Optional[str] = None,
 ) -> Charge:
-    data = CreateCharge(**data.dict())
     charge_id = urlsafe_short_hash()
     if data.onchainwallet:
-        if not onchainaddress or not config:
+        if not onchainaddress:
             raise Exception(f"Wallet '{data.onchainwallet}' can no longer be accessed.")
-        # This overwrites the send in data, disabled as quick fix.
-        #data.extra = json.dumps(
-        #    {"mempool_endpoint": config.mempool_endpoint, "network": config.network}
-        #)
 
     assert data.amount, "Amount is required"
     if data.lnbitswallet:
@@ -39,7 +31,7 @@ async def create_charge(
             wallet_id=data.lnbitswallet,
             amount=data.amount,
             memo=data.description,
-            extra={"tag": "charge", "charge": charge_id, "charge_data": data.extra},
+            extra={"tag": "charge", "charge": charge_id},
             expiry=int(data.time * 60),  # convert minutes to seconds
         )
     else:
@@ -63,11 +55,14 @@ async def create_charge(
             time,
             amount,
             zeroconf,
+            fasttrack,
             balance,
             extra,
-            custom_css
+            custom_css,
+            currency,
+            currency_amount
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             charge_id,
@@ -85,9 +80,12 @@ async def create_charge(
             data.time,
             data.amount,
             data.zeroconf,
+            data.fasttrack,
             0,
             data.extra,
             data.custom_css,
+            data.currency,
+            data.currency_amount,
         ),
     )
     charge = await get_charge(charge_id)
@@ -115,6 +113,11 @@ async def update_charge(charge: Charge) -> Charge:
 async def get_charge(charge_id: str) -> Optional[Charge]:
     row = await db.fetchone("SELECT * FROM satspay.charges WHERE id = ?", (charge_id,))
     return Charge(**row) if row else None
+
+
+async def get_pending_charges() -> list[Charge]:
+    rows = await db.fetchall("SELECT * FROM satspay.charges WHERE paid = false")
+    return [Charge(**row) for row in rows]
 
 
 async def get_charge_by_onchain_address(onchain_address: str) -> Optional[Charge]:

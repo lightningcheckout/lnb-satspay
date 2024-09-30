@@ -1,5 +1,5 @@
 import asyncio
-import json
+import time
 
 from fastapi import WebSocket
 from lnbits.core.models import Payment
@@ -7,13 +7,35 @@ from lnbits.settings import settings
 from lnbits.tasks import register_invoice_listener
 from loguru import logger
 
-from .crud import get_charge, get_charge_by_onchain_address, update_charge
-from .helpers import call_webhook
+from .crud import (
+    get_charge,
+    get_charge_by_onchain_address,
+    get_pending_charges,
+    update_charge,
+)
+from .helpers import call_webhook, check_charge_balance, sum_transactions
 from .models import Charge
 from .websocket_handler import ws_receive_queue, ws_send_queue
 
 tracked_addresses: list[str] = []
-public_ws_listeners: dict[str, WebSocket] = {}
+public_ws_listeners: dict[str, list[WebSocket]] = {}
+
+
+async def restart_address_tracking():
+    charges = await get_pending_charges()
+    for charge in charges:
+        if (
+            charge.onchainaddress
+            and charge.timestamp.timestamp() + charge.time * 60 > time.time()
+        ):
+            charge = await check_charge_balance(charge)
+            assert charge.onchainaddress
+            if charge.paid:
+                charge.add_extra({"payment_method": "onchain"})
+                await update_charge(charge)
+                logger.success(f"Charge {charge.id} marked as paid.")
+                continue
+            start_onchain_listener(charge.onchainaddress)
 
 
 async def wait_for_paid_invoices():
@@ -26,16 +48,19 @@ async def wait_for_paid_invoices():
 
 
 async def send_success_websocket(charge: Charge):
-    for charge_id, listener in public_ws_listeners.items():
+    for charge_id, listeners in public_ws_listeners.items():
         if charge_id == charge.id:
-            await listener.send_json(
-                {
-                    "paid": charge.paid,
-                    "balance": charge.balance,
-                    "pending": charge.pending,
-                    "completelink": charge.completelink if charge.paid else None,
-                }
-            )
+            for listener in listeners:
+                await listener.send_json(
+                    {
+                        "paid": charge.paid_fasttrack,
+                        "balance": charge.balance,
+                        "pending": charge.pending,
+                        "completelink": (
+                            charge.completelink if charge.paid_fasttrack else None
+                        ),
+                    }
+                )
 
 
 async def on_invoice_paid(payment: Payment) -> None:
@@ -53,10 +78,11 @@ async def on_invoice_paid(payment: Payment) -> None:
         charge.balance = int(payment.amount / 1000)
         charge.paid = True
         logger.success(f"Charge {charge.id} invoice paid.")
+        charge.add_extra({"payment_method": "lightning"})
         await send_success_websocket(charge)
         if charge.webhook:
             resp = await call_webhook(charge)
-            charge.extra = json.dumps({**charge.config.dict(), **resp})
+            charge.add_extra(resp)
         await update_charge(charge)
 
 
@@ -85,21 +111,14 @@ async def wait_for_onchain():
             await _handle_ws_message(address, data)
 
 
-def sum_outputs(address: str, vouts):
-    return sum(
-        [vout["value"] for vout in vouts if vout.get("scriptpubkey_address") == address]
-    )
-
-
-def sum_transactions(address: str, txs):
-    return sum([sum_outputs(address, tx["vout"]) for tx in txs])
-
-
 async def _handle_ws_message(address: str, data: dict):
     charge = await get_charge_by_onchain_address(address)
     assert charge, f"Charge with address `{address}` does not exist."
     unconfirmed_balance = sum_transactions(address, data.get("mempool", []))
     confirmed_balance = sum_transactions(address, data.get("confirmed", []))
+    unconfirmed_txids = [tx["txid"] for tx in data.get("mempool", [])]
+    confirmed_txids = [tx["txid"] for tx in data.get("confirmed", [])]
+    charge.add_extra({"txids": confirmed_txids + unconfirmed_txids})
     if charge.zeroconf:
         confirmed_balance += unconfirmed_balance
     charge.balance = confirmed_balance
@@ -107,9 +126,10 @@ async def _handle_ws_message(address: str, data: dict):
     charge.paid = charge.balance >= charge.amount
     await send_success_websocket(charge)
     if charge.paid:
+        charge.add_extra({"payment_method": "onchain"})
         logger.success(f"Charge {charge.id} onchain paid.")
         stop_onchain_listener(address)
-        if charge.webhook:
-            resp = await call_webhook(charge)
-            charge.extra = json.dumps({**charge.config.dict(), **resp})
+    if charge.webhook:
+        resp = await call_webhook(charge)
+        charge.add_extra(resp)
     await update_charge(charge)

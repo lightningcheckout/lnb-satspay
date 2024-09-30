@@ -10,17 +10,29 @@ new Vue({
     return {
       currencies: [],
       fiatRates: {},
-      settings: {},
       settings: [
+        {
+          type: 'str',
+          description:
+            'Network used by OnchainWallet extension Wallet. default: `Mainnet`, or `Testnet` for testnet',
+          name: 'network'
+        },
         {
           type: 'str',
           description:
             'Mempool API URL. default: `https://mempool.space`, use `https://mempool.space/testnet` for testnet',
           name: 'mempool_url'
+        },
+        {
+          type: 'str',
+          description:
+            'Webhook Method with which the webhook is sent (GET is required for Woocommerce plugin). default: `GET`, or `POST`',
+          name: 'webhook_method'
         }
       ],
       filter: '',
       admin: admin,
+      network: network,
       balance: null,
       walletLinks: [],
       chargeLinks: [],
@@ -28,12 +40,7 @@ new Vue({
       themeOptions: [],
       onchainwallet: '',
       rescanning: false,
-      mempool: {
-        endpoint: '',
-        network: 'Mainnet'
-      },
       showAdvanced: false,
-
       chargesTable: {
         columns: [
           {
@@ -43,10 +50,10 @@ new Vue({
             field: 'id'
           },
           {
-            name: 'description',
+            name: 'name',
             align: 'left',
-            label: 'Title',
-            field: 'description'
+            label: 'Name',
+            field: 'name'
           },
           {
             name: 'timeLeft',
@@ -110,16 +117,16 @@ new Vue({
       customCSSTable: {
         columns: [
           {
-            name: 'css_id',
-            align: 'left',
-            label: 'ID',
-            field: 'css_id'
-          },
-          {
             name: 'title',
             align: 'left',
             label: 'Title',
             field: 'title'
+          },
+          {
+            name: 'css_id',
+            align: 'left',
+            label: 'ID',
+            field: 'css_id'
           }
         ],
         pagination: {
@@ -132,6 +139,7 @@ new Vue({
           onchain: false,
           onchainwallet: '',
           zeroconf: false,
+          fasttrack: false,
           lnbits: false,
           description: '',
           custom_css: '',
@@ -171,31 +179,16 @@ new Vue({
 
     getWalletLinks: async function () {
       try {
-        const {data} = await LNbits.api.request(
+        let {data} = await LNbits.api.request(
           'GET',
-          `/watchonly/api/v1/wallet?network=${this.mempool.network}`,
+          `/watchonly/api/v1/wallet?network=${this.network}`,
           this.g.user.wallets[0].adminkey
         )
+        data = data.filter(w => w.network === this.network)
         this.walletLinks = data.map(w => ({
           id: w.id,
           label: w.title + ' - ' + w.id
         }))
-      } catch (error) {
-        LNbits.utils.notifyApiError(error)
-      }
-    },
-
-    getWalletConfig: async function () {
-      try {
-        const {data} = await LNbits.api.request(
-          'GET',
-          '/watchonly/api/v1/config',
-          this.g.user.wallets[0].inkey
-        )
-        this.mempool.endpoint = data.mempool_endpoint
-        this.mempool.network = data.network || 'Mainnet'
-        const url = new URL(this.mempool.endpoint)
-        this.mempool.hostname = url.hostname
       } catch (error) {
         LNbits.utils.notifyApiError(error)
       }
@@ -365,10 +358,28 @@ new Vue({
           }
         })
     },
-    checkChargeBalance: function (chargeId) {
+    sendWebhook: function (chargeId) {
       LNbits.api
         .request(
           'GET',
+          `/satspay/api/v1/charge/webhook/${chargeId}`,
+          this.g.user.wallets[0].adminkey
+        )
+        .then(response => {
+          console.log(response)
+          this.$q.notify({
+            message: 'Webhook sent',
+            color: 'positive'
+          })
+        })
+        .catch(err => {
+          LNbits.utils.notifyApiError(err)
+        })
+    },
+    checkChargeBalance: function (chargeId) {
+      LNbits.api
+        .request(
+          'PUT',
           `/satspay/api/v1/charge/balance/${chargeId}`,
           this.g.user.wallets[0].adminkey
         )
@@ -380,7 +391,6 @@ new Vue({
           const index = this.chargeLinks.findIndex(c => c.id === chargeId)
           this.chargeLinks[index] = mapCharge(charge, this.chargeLinks[index])
           if (charge.paid) {
-            LNbits.utils.notify('Charge paid')
             this.$q.notify({
               message: 'Charge paid',
               color: 'positive'
@@ -426,7 +436,6 @@ new Vue({
       await this.getThemes()
     }
     await this.getCharges()
-    await this.getWalletConfig()
     await this.getWalletLinks()
     LNbits.api
       .request('GET', '/api/v1/currencies')
