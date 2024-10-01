@@ -13,10 +13,9 @@ async def call_webhook(charge: Charge):
         assert charge.webhook
         async with httpx.AsyncClient() as client:
             # wordpress expect a GET request with json_encoded binary content
-            r = await client.request(
-                method="GET",
+            r = await client.post(
                 url=charge.webhook,
-                content=charge.json(),
+                json=charge.json(),
                 timeout=10,
             )
             if r.is_success:
