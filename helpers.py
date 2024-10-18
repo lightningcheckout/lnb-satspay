@@ -26,6 +26,7 @@ async def call_webhook(charge: Charge):
                 logger.warning(f"Failed to call webhook for charge {charge.id}")
                 logger.warning(charge.webhook)
                 logger.warning(r.text)
+                logger.warning(settings)
             return {
                 "webhook_success": r.is_success,
                 "webhook_message": r.reason_phrase,
