@@ -24,6 +24,7 @@ async def call_webhook(charge: Charge):
                 logger.warning(f"Failed to call webhook for charge {charge.id}")
                 logger.warning(charge.webhook)
                 logger.warning(r.text)
+                logger.warning(charge.json())
             return {
                 "webhook_success": r.is_success,
                 "webhook_message": r.reason_phrase,
@@ -85,12 +86,6 @@ async def check_charge_balance(charge: Charge) -> Charge:
     if charge.paid:
         return charge
 
-    if charge.lnbitswallet and charge.payment_hash:
-        payment = await get_standalone_payment(charge.payment_hash)
-        assert payment, "Payment not found."
-        status = await payment.check_status()
-        if status.success:
-            charge.balance = charge.amount
 
     if charge.onchainaddress:
         try:
@@ -109,6 +104,13 @@ async def check_charge_balance(charge: Charge) -> Charge:
                 charge.pending = balance.unconfirmed
         except Exception as exc:
             logger.warning(f"Charge check onchain address failed with: {exc!s}")
+
+    if charge.lnbitswallet and charge.payment_hash:
+        payment = await get_standalone_payment(charge.payment_hash)
+        assert payment, "Payment not found."
+        status = await payment.check_status()
+        if status.success:
+            charge.balance = charge.amount
 
     charge.paid = charge.balance >= charge.amount
 
