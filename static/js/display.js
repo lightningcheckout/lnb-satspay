@@ -10,7 +10,7 @@ new Vue({
       wallet: {
         inkey: ''
       },
-      tab: 'ln'
+      tab: 'uqr'
     }
   },
   computed: {
